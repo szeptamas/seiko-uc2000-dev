@@ -7,8 +7,9 @@
 ;
 ; Display model:
 ;   Text-mode 4x10 playfield using character cells.
-;   The bird is fixed at column 1. The pipe advances through columns
-;   9, 7, 5, 3, 1. Collision is checked only at column 1.
+;   The bird is a race-the-beam pseudo-sprite at columns 0-1.
+;   The pipe advances through column pairs 8-9, 6-7, 4-5, 2-3, 0-1.
+;   Collision is checked only at 0-1.
 
         ##define birdY RA0
         ##define pipeStep RA1
@@ -16,7 +17,13 @@
         ##define gameState RA3
         ##define scoreL RA4
         ##define topScore RA5
-        ##define birdFrame RA6
+        ##define birdState RA6
+        ##define flashCount RA7
+
+        ##define scoreT RC0
+        ##define scoreH RC1
+        ##define topScoreT RC2
+        ##define topScoreH RC3
 
         ##define buttonsState RB0
         ##define delayOuter RB1
@@ -46,12 +53,47 @@
         jmp draw
         ret
 
+strTitle:
+        db 'F','l','a','p','p','y','B','i','r','d'
+strByLion:
+        db ' ','b','y',' ','L','i','o','n',' ',' '
+strStart:
+        db 'S','t','a','r','t',':',' ','A','N','Y'
+strFlap:
+        db 'F','l','a','p',':','T','R','N','S','M'
+strGameOver:
+        db 'G','A','M','E',' ','O','V','E','R',' '
+strScore:
+        db 'S','c','o','r','e',':'
+strTop:
+        db 'T','o','p',':',' ',' '
+
+birdSpriteNormal:
+        db 0xE1,0x44, 0x31,0x4A, 0x36,0x22, 0x47,0x29, 0xDA,0xE5, 0x66,0x9B, 0x5D,0x44
+birdSpriteUp:
+        db 0x00,0x42, 0xFC,0xFC, 0x21,0x7F, 0x7E,0x29, 0xDA,0x21, 0x6B,0x66, 0x47,0x46
+birdSpriteDown:
+        db 0x7E,0x25, 0x35,0x21, 0x62,0x22, 0x7E,0x29, 0x24,0x26, 0x34,0xFB, 0x71,0x44
+birdSpriteDead:
+        db 0x28,0x4C, 0x00,0x00, 0x32,0x35, 0x32,0x35, 0x6B,0x30, 0x2F,0xFB, 0x47,0x32
+birdSpriteNormalRev:
+        db 0x5D,0x44, 0x66,0x9B, 0xDA,0xE5, 0x47,0x29, 0x36,0x22, 0x31,0x4A, 0xE1,0x44
+birdSpriteUpRev:
+        db 0x47,0x46, 0x6B,0x66, 0xDA,0x21, 0x7E,0x29, 0x21,0x7F, 0xFC,0xFC, 0x00,0x42
+birdSpriteDownRev:
+        db 0x71,0x44, 0x34,0xFB, 0x24,0x26, 0x7E,0x29, 0x62,0x22, 0x35,0x21, 0x7E,0x25
+birdSpriteDeadRev:
+        db 0x47,0x32, 0x2F,0xFB, 0x6B,0x30, 0x32,0x35, 0x32,0x35, 0x00,0x00, 0x28,0x4C
+
 start:
         stlia clearScreen
         outi SR7, 0
         outi SR13, 0
         lcrb B3
         larb B0
+        ldi topScore, 0
+        ldi topScoreT, 0
+        ldi topScoreH, 0
         call show_title
         jmp wait_start
 
@@ -65,11 +107,6 @@ wait_start_no_key:
 
 game_loop:
         call delay_frame
-        inc birdFrame, birdFrame % 8
-        cpi birdFrame, 3
-        jnz bird_frame_ok
-        ldi birdFrame, 0
-bird_frame_ok:
         in buttonsState, SR7
         btjr buttonsState, 2, do_flap
         cpjr buttonsState, 0, no_flap
@@ -77,29 +114,41 @@ bird_frame_ok:
         jmp no_flap
 do_flap:
         outi SR7, 0
-        ldi birdFrame, 0
-        cpjr birdY, 0, flap_done
+        ldi flashCount, 2
+        cpjr birdY, 0, after_gravity
         dec birdY, birdY % 8
-flap_done:
         jmp after_gravity
 no_flap:
         inc birdY, birdY % 8
         cpi birdY, 4
         jnc game_over
 after_gravity:
+        call update_bird_anim
 
         inc pipeStep, pipeStep % 8
         cpi pipeStep, 5
         jnz timer_check_collision
         ldi pipeStep, 0
         inc scoreL, scoreL % 8
+        cpi scoreL, 10
+        jnz score_inc_done
+        ldi scoreL, 0
+        inc scoreT, scoreT % 8
+        cpi scoreT, 10
+        jnz score_inc_done
+        ldi scoreT, 0
+        inc scoreH, scoreH % 8
+        cpi scoreH, 10
+        jnz score_inc_done
+        ldi scoreH, 0
+score_inc_done:
         inc gapY, gapY % 8
         cpi gapY, 3
         jnz timer_check_collision
         ldi gapY, 1
 
 timer_check_collision:
-        cpi pipeStep, 4         ; column 1, same as bird column.
+        cpi pipeStep, 4         ; columns 0-1, same as bird columns.
         jnz timer_draw
         call check_gap
 timer_draw:
@@ -119,20 +168,67 @@ check_gap1:
 check_gap_ok:
         ret
 
+update_bird_anim:
+        cpjr flashCount, 0, bird_anim_down
+        cpi flashCount, 2
+        jz bird_anim_up
+bird_anim_normal:
+        ldi birdState, 0
+        dec flashCount, flashCount % 8
+        ret
+bird_anim_up:
+        ldi birdState, 1
+        dec flashCount, flashCount % 8
+        ret
+bird_anim_down:
+        ldi birdState, 2
+        ret
+
 new_game:
         ldi birdY, 1
         ldi pipeStep, 0
         ldi gapY, 1
         ldi scoreL, 0
-        ldi birdFrame, 0
+        ldi scoreT, 0
+        ldi scoreH, 0
+        ldi flashCount, 0
+        ldi birdState, 0
         ldi gameState, 1
         call draw
         jmp game_loop
 
 game_over:
+        cpi pipeStep, 4
+        jnz game_over_flash_init
+game_over_shift_pipe:
+        ldi pipeStep, 3
+game_over_flash_init:
+        ldi birdState, 3
+        ldi flashCount, 4
+game_over_flash_loop:
+        stlia clearScreen
+        call draw_pipe
+        call draw_score_hud
+        call draw_bird_rtb
+        call delay_frame
+        stlia clearScreen
+        call draw_pipe
+        call draw_score_hud
+        call delay_frame
+        dec flashCount, flashCount % 8
+        jnz game_over_flash_loop
         ldi gameState, 2
+        cmp scoreH, topScoreH
+        jc game_over_keep_top
+        jnz game_over_set_top
+        cmp scoreT, topScoreT
+        jc game_over_keep_top
+        jnz game_over_set_top
         cmp scoreL, topScore
         jc game_over_keep_top
+game_over_set_top:
+        mov topScoreH, scoreH
+        mov topScoreT, scoreT
         mov topScore, scoreL
 game_over_keep_top:
         stlia clearScreen
@@ -181,8 +277,11 @@ wait_release_done:
 
 show_title:
         stlia clearScreen
-        plai 10
+        plai 0
         psai strTitle
+        call print10RAMBytes
+        plai 10
+        psai strByLion
         call print10RAMBytes
         plai 20
         psai strStart
@@ -194,100 +293,99 @@ show_title:
         ret
 
 print_score:
-        cpi scoreL, 0
-        jz print_score0
-        cpi scoreL, 1
-        jz print_score1
-        cpi scoreL, 2
-        jz print_score2
-        cpi scoreL, 3
-        jz print_score3
-        cpi scoreL, 4
-        jz print_score4
-        cpi scoreL, 5
-        jz print_score5
-        cpi scoreL, 6
-        jz print_score6
-        cpi scoreL, 7
-        jz print_score7
-        cpi scoreL, 8
-        jz print_score8
-        jmp print_score9
-print_score0:
-        stli '0'
-        ret
-print_score1:
-        stli '1'
-        ret
-print_score2:
-        stli '2'
-        ret
-print_score3:
-        stli '3'
-        ret
-print_score4:
-        stli '4'
-        ret
-print_score5:
-        stli '5'
-        ret
-print_score6:
-        stli '6'
-        ret
-print_score7:
-        stli '7'
-        ret
-print_score8:
-        stli '8'
-        ret
-print_score9:
-        stli '9'
-        ret
+        cpi scoreH, 0
+        jz print_score_h_blank
+        mov delayOuter, scoreH
+        call print_digit_delay_outer
+        jmp print_score_tens
+print_score_h_blank:
+        stli ' '
+print_score_tens:
+        cpi scoreH, 0
+        jnz print_score_t_digit
+        cpi scoreT, 0
+        jz print_score_t_blank
+print_score_t_digit:
+        mov delayOuter, scoreT
+        call print_digit_delay_outer
+        jmp print_score_units
+print_score_t_blank:
+        stli ' '
+print_score_units:
+        mov delayOuter, scoreL
+        jmp print_digit_delay_outer
 
 print_top_score:
-        cpjr topScore, 0, print_top_score0
-        cpjr topScore, 1, print_top_score1
-        cpjr topScore, 2, print_top_score2
-        cpjr topScore, 3, print_top_score3
-        cpi topScore, 4
-        jz print_top_score4
-        cpi topScore, 5
-        jz print_top_score5
-        cpi topScore, 6
-        jz print_top_score6
-        cpi topScore, 7
-        jz print_top_score7
-        cpi topScore, 8
-        jz print_top_score8
-        jmp print_top_score9
-print_top_score0:
+        cpi topScoreH, 0
+        jz print_top_h_blank
+        mov delayOuter, topScoreH
+        call print_digit_delay_outer
+        jmp print_top_tens
+print_top_h_blank:
+        stli ' '
+print_top_tens:
+        cpi topScoreH, 0
+        jnz print_top_t_digit
+        cpi topScoreT, 0
+        jz print_top_t_blank
+print_top_t_digit:
+        mov delayOuter, topScoreT
+        call print_digit_delay_outer
+        jmp print_top_units
+print_top_t_blank:
+        stli ' '
+print_top_units:
+        mov delayOuter, topScore
+        jmp print_digit_delay_outer
+
+print_digit_delay_outer:
+        cpi delayOuter, 0
+        jz print_digit0
+        cpi delayOuter, 1
+        jz print_digit1
+        cpi delayOuter, 2
+        jz print_digit2
+        cpi delayOuter, 3
+        jz print_digit3
+        cpi delayOuter, 4
+        jz print_digit4
+        cpi delayOuter, 5
+        jz print_digit5
+        cpi delayOuter, 6
+        jz print_digit6
+        cpi delayOuter, 7
+        jz print_digit7
+        cpi delayOuter, 8
+        jz print_digit8
+        jmp print_digit9
+print_digit0:
         stli '0'
         ret
-print_top_score1:
+print_digit1:
         stli '1'
         ret
-print_top_score2:
+print_digit2:
         stli '2'
         ret
-print_top_score3:
+print_digit3:
         stli '3'
         ret
-print_top_score4:
+print_digit4:
         stli '4'
         ret
-print_top_score5:
+print_digit5:
         stli '5'
         ret
-print_top_score6:
+print_digit6:
         stli '6'
         ret
-print_top_score7:
+print_digit7:
         stli '7'
         ret
-print_top_score8:
+print_digit8:
         stli '8'
         ret
-print_top_score9:
+print_digit9:
         stli '9'
         ret
 
@@ -297,41 +395,245 @@ draw:
 draw_playing:
         stlia clearScreen
         call draw_pipe
-        call draw_bird
+        jmp draw_score_hud_playing
+
+draw_score_hud_playing:
+        stlia resetScanline
+        call print_score_hud
+        stlia resetScanline
+        jmp draw_bird_rtb
+
+draw_score_hud:
+        stlia resetScanline
+        call print_score_hud
         stlia resetScanline
         ret
 
-draw_bird:
-        cpjr birdY, 0, draw_bird0
-        cpjr birdY, 1, draw_bird1
-        cpjr birdY, 2, draw_bird2
-draw_bird3:
-        plai 31
-        call draw_bird_char
+print_score_hud:
+        cpi scoreH, 0
+        jz print_score_hud_check_tens
+        plai 7
+        mov delayOuter, scoreH
+        call print_digit_delay_outer
+        mov delayOuter, scoreT
+        call print_digit_delay_outer
+        mov delayOuter, scoreL
+        jmp print_digit_delay_outer
+print_score_hud_check_tens:
+        cpi scoreT, 0
+        jz print_score_hud_units
+        plai 8
+        mov delayOuter, scoreT
+        call print_digit_delay_outer
+        mov delayOuter, scoreL
+        jmp print_digit_delay_outer
+print_score_hud_units:
+        plai 9
+        mov delayOuter, scoreL
+        jmp print_digit_delay_outer
+
+draw_bird_rtb:
+        cpjr birdY, 0, draw_bird_rtb0
+        cpjr birdY, 1, draw_bird_rtb1_j
+        cpjr birdY, 2, draw_bird_rtb2_j
+        jmp draw_bird_rtb3
+draw_bird_rtb1_j:
+        jmp draw_bird_rtb1
+draw_bird_rtb2_j:
+        jmp draw_bird_rtb2
+
+select_bird_sprite_top:
+        cpjr birdState, 0, select_bird_sprite_normal
+        cpjr birdState, 1, select_bird_sprite_up
+        cpjr birdState, 2, select_bird_sprite_down
+        psai birdSpriteDead
         ret
-draw_bird2:
-        plai 21
-        call draw_bird_char
+select_bird_sprite_normal:
+        psai birdSpriteNormal
         ret
-draw_bird1:
-        plai 11
-        call draw_bird_char
+select_bird_sprite_up:
+        psai birdSpriteUp
         ret
-draw_bird0:
-        plai 1
-        call draw_bird_char
+select_bird_sprite_down:
+        psai birdSpriteDown
         ret
 
-draw_bird_char:
-        cpjr birdFrame, 0, draw_bird_char0
-        cpjr birdFrame, 1, draw_bird_char1
-        stli 0x98
+select_bird_sprite_bottom:
+        cpjr birdState, 0, select_bird_sprite_bottom_normal
+        cpjr birdState, 1, select_bird_sprite_bottom_up
+        cpjr birdState, 2, select_bird_sprite_bottom_down
+        psai birdSpriteDeadRev
         ret
-draw_bird_char1:
-        stli 0x99
+select_bird_sprite_bottom_normal:
+        psai birdSpriteNormalRev
         ret
-draw_bird_char0:
-        stli 0x97
+select_bird_sprite_bottom_up:
+        psai birdSpriteUpRev
+        ret
+select_bird_sprite_bottom_down:
+        psai birdSpriteDownRev
+        ret
+
+draw_bird_rtb0:
+        call select_bird_sprite_top
+        plai 0
+        stls
+        stls
+        stlia resetScanline
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        plai 0
+        stls
+        stls
+        cpi RB0, 0
+        ret
+
+draw_bird_rtb1:
+        call select_bird_sprite_top
+        plai 10
+        stls
+        stls
+        stlia resetScanline
+        ldi delayInner, 15
+draw_bird_rtb1_wait:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb1_wait
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        plai 10
+        stls
+        stls
+        cpi RB0, 0
+        ret
+
+draw_bird_rtb2:
+        call select_bird_sprite_bottom
+        plai 20
+        stls
+        stls
+        stlia resetScanline
+        ldi delayInner, 15
+draw_bird_rtb2_wait1:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb2_wait1
+        ldi delayInner, 15
+draw_bird_rtb2_wait2:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb2_wait2
+        ldi delayInner, 15
+draw_bird_rtb2_wait3:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb2_wait3
+        cpi RB0, 0
+        cpi RB0, 0
+        cpi RB0, 0
+        cpi RB0, 0
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        plai 20
+        stls
+        stls
+        cpi RB0, 0
+        ret
+
+draw_bird_rtb3:
+        call select_bird_sprite_bottom
+        plai 30
+        stls
+        stls
+        stlia resetScanline
+        ldi delayInner, 15
+draw_bird_rtb3_wait1:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb3_wait1
+        ldi delayInner, 15
+draw_bird_rtb3_wait2:
+        dec delayInner, delayInner % 8
+        jnz draw_bird_rtb3_wait2
+        cpi RB0, 0
+        cpi RB0, 0
+        cpi RB0, 0
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
+        plai 30
+        stls
+        stls
+        cpi RB0, 0
         ret
 
 draw_pipe:
@@ -351,13 +653,21 @@ draw_pipe3_j:
 
 draw_pipe9:
         cpjr gapY, 1, draw_pipe9_gap1
+        plai 8
+        stli 0xFF
         plai 9
+        stli 0xFF
+        plai 38
         stli 0xFF
         plai 39
         stli 0xFF
         ret
 draw_pipe9_gap1:
+        plai 28
+        stli 0xFF
         plai 29
+        stli 0xFF
+        plai 38
         stli 0xFF
         plai 39
         stli 0xFF
@@ -365,13 +675,21 @@ draw_pipe9_gap1:
 
 draw_pipe7:
         cpjr gapY, 1, draw_pipe7_gap1
+        plai 6
+        stli 0xFF
         plai 7
+        stli 0xFF
+        plai 36
         stli 0xFF
         plai 37
         stli 0xFF
         ret
 draw_pipe7_gap1:
+        plai 26
+        stli 0xFF
         plai 27
+        stli 0xFF
+        plai 36
         stli 0xFF
         plai 37
         stli 0xFF
@@ -379,13 +697,21 @@ draw_pipe7_gap1:
 
 draw_pipe5:
         cpjr gapY, 1, draw_pipe5_gap1
+        plai 4
+        stli 0xFF
         plai 5
+        stli 0xFF
+        plai 34
         stli 0xFF
         plai 35
         stli 0xFF
         ret
 draw_pipe5_gap1:
+        plai 24
+        stli 0xFF
         plai 25
+        stli 0xFF
+        plai 34
         stli 0xFF
         plai 35
         stli 0xFF
@@ -393,13 +719,21 @@ draw_pipe5_gap1:
 
 draw_pipe3:
         cpjr gapY, 1, draw_pipe3_gap1
+        plai 2
+        stli 0xFF
         plai 3
+        stli 0xFF
+        plai 32
         stli 0xFF
         plai 33
         stli 0xFF
         ret
 draw_pipe3_gap1:
+        plai 22
+        stli 0xFF
         plai 23
+        stli 0xFF
+        plai 32
         stli 0xFF
         plai 33
         stli 0xFF
@@ -407,27 +741,22 @@ draw_pipe3_gap1:
 
 draw_pipe1:
         cpjr gapY, 1, draw_pipe1_gap1
+        plai 0
+        stli 0xFF
         plai 1
+        stli 0xFF
+        plai 30
         stli 0xFF
         plai 31
         stli 0xFF
         ret
 draw_pipe1_gap1:
+        plai 20
+        stli 0xFF
         plai 21
+        stli 0xFF
+        plai 30
         stli 0xFF
         plai 31
         stli 0xFF
         ret
-
-strTitle:
-        db 'F','L','A','P','P','Y',' ','U','C','2'
-strStart:
-        db 'S','T','A','R','T',' ','A','N','Y',' '
-strFlap:
-        db 'F','L','A','P',' ','T','R','N','S','M'
-strGameOver:
-        db 'G','A','M','E',' ','O','V','E','R',' '
-strScore:
-        db 'S','C','O','R','E',' '
-strTop:
-        db 'T','O','P',' ',' ',' '
