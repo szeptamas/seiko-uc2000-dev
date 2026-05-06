@@ -2,8 +2,9 @@
 ; Tiny Flappy-style game, first hardware-test draft
 ;
 ; Controls:
-;   Any key starts/restarts
-;   TRANSMIT makes the bird flap
+;   START/STOP SELECT starts/restarts
+;   START/STOP SELECT makes the bird flap
+;   MODE toggles sound on the title screen
 ;
 ; Display model:
 ;   Text-mode 4x10 playfield using character cells.
@@ -14,7 +15,7 @@
         ##define birdY RA0
         ##define pipeStep RA1
         ##define gapY RA2
-        ##define gameState RA3
+        ##define gameFlags RA3
         ##define scoreL RA4
         ##define topScore RA5
         ##define birdState RA6
@@ -24,11 +25,20 @@
         ##define scoreH RC1
         ##define topScoreT RC2
         ##define topScoreH RC3
+        ##define birdMotion RC4
 
         ##define buttonsState RB0
         ##define delayOuter RB1
         ##define delayInner RB2
         ##define delayRepeat RB3
+
+        ##define soundOff 0
+        ##define settingsInitA 1
+        ##define settingsInitB 2
+        ##define settingsInitC 3
+
+        ##define btnMode 3
+        ##define btnStart 1
 
         ##define clearScreen 0x7D
         ##define resetScanline 0x7F
@@ -36,6 +46,10 @@
         ##define print6RAMBytes 0xBD0 - 6
         ##define print10RAMBytes 0xBD0 - 10
         ##define clearCurrentBank 0x8F2
+
+        ##define tremoloOn 0b0100
+        ##define tremoloOff 0b0010
+        ##define beep 0b0001
 
         jmp start
         jmp start
@@ -58,9 +72,11 @@ strTitle:
 strByLion:
         db ' ','b','y',' ','L','i','o','n',' ',' '
 strStart:
-        db 'S','t','a','r','t',':',' ','A','N','Y'
-strFlap:
-        db 'F','l','a','p',':','T','R','N','S','M'
+        db 'P','l','a','y',':','S','T','A','R','T'
+strSoundOn:
+        db 'S','N','D','O','N',':','M','O','D','E'
+strSoundOff:
+        db 'S','N','D','O','F','F',':','M','O','D'
 strGameOver:
         db 'G','A','M','E',' ','O','V','E','R',' '
 strScore:
@@ -89,8 +105,19 @@ start:
         stlia clearScreen
         outi SR7, 0
         outi SR13, 0
+        outi SR15, tremoloOff
         lcrb B3
         larb B0
+        btjr gameFlags, settingsInitA, start_check_init_b
+        jmp start_init_settings
+start_check_init_b:
+        btjr gameFlags, settingsInitB, start_check_init_c
+        jmp start_init_settings
+start_check_init_c:
+        btjr gameFlags, settingsInitC, start_keep_settings
+start_init_settings:
+        ldi gameFlags, (1 << settingsInitA) | (1 << settingsInitB) | (1 << settingsInitC)
+start_keep_settings:
         ldi topScore, 0
         ldi topScoreT, 0
         ldi topScoreH, 0
@@ -100,47 +127,64 @@ start:
 wait_start:
         in buttonsState, SR7
         cpjr buttonsState, 0, wait_start_no_key
+        btjr buttonsState, btnMode, wait_start_toggle_sound
+        btjr buttonsState, btnStart, wait_start_do_start
         outi SR7, 0
+        call wait_release
+        jmp wait_start
+wait_start_do_start:
+        outi SR7, 0
+        call wait_release
         jmp new_game
+wait_start_toggle_sound:
+        xori gameFlags, 1 << soundOff
+        outi SR7, 0
+        call show_title
+        call wait_release
+        jmp wait_start
 wait_start_no_key:
         jmp wait_start
 
 game_loop:
         call delay_frame
         in buttonsState, SR7
-        btjr buttonsState, 2, do_flap
+        btjr buttonsState, btnStart, do_flap
         cpjr buttonsState, 0, no_flap
         outi SR7, 0
         jmp no_flap
 do_flap:
         outi SR7, 0
-        ldi flashCount, 2
-        cpjr birdY, 0, after_gravity
+        cpjr birdY, 0, do_flap_set_motion
         dec birdY, birdY % 8
+do_flap_set_motion:
+        ldi birdState, 1
+        ldi birdMotion, 1
         jmp after_gravity
 no_flap:
-        inc birdY, birdY % 8
+        call update_bird_motion
         cpi birdY, 4
-        jnc game_over
+        jc after_gravity
+        ldi birdY, 3
+        jmp game_over
 after_gravity:
-        call update_bird_anim
-
         inc pipeStep, pipeStep % 8
         cpi pipeStep, 5
         jnz timer_check_collision
         ldi pipeStep, 0
         inc scoreL, scoreL % 8
         cpi scoreL, 10
-        jnz score_inc_done
+        jnz score_inc_beep
         ldi scoreL, 0
         inc scoreT, scoreT % 8
         cpi scoreT, 10
-        jnz score_inc_done
+        jnz score_inc_beep
         ldi scoreT, 0
         inc scoreH, scoreH % 8
         cpi scoreH, 10
-        jnz score_inc_done
+        jnz score_inc_beep
         ldi scoreH, 0
+score_inc_beep:
+        call play_score_beep_if_enabled
 score_inc_done:
         inc gapY, gapY % 8
         cpi gapY, 3
@@ -168,20 +212,15 @@ check_gap1:
 check_gap_ok:
         ret
 
-update_bird_anim:
-        cpjr flashCount, 0, bird_anim_down
-        cpi flashCount, 2
-        jz bird_anim_up
-bird_anim_normal:
-        ldi birdState, 0
-        dec flashCount, flashCount % 8
-        ret
-bird_anim_up:
-        ldi birdState, 1
-        dec flashCount, flashCount % 8
-        ret
-bird_anim_down:
+update_bird_motion:
+        cpjr birdMotion, 1, bird_motion_normal
+bird_motion_down:
         ldi birdState, 2
+        inc birdY, birdY % 8
+        ret
+bird_motion_normal:
+        ldi birdState, 0
+        ldi birdMotion, 2
         ret
 
 new_game:
@@ -191,9 +230,10 @@ new_game:
         ldi scoreL, 0
         ldi scoreT, 0
         ldi scoreH, 0
+        ldi birdMotion, 2
         ldi flashCount, 0
         ldi birdState, 0
-        ldi gameState, 1
+        outi SR15, tremoloOff
         call draw
         jmp game_loop
 
@@ -205,19 +245,22 @@ game_over_shift_pipe:
 game_over_flash_init:
         ldi birdState, 3
         ldi flashCount, 4
+        btjr gameFlags, soundOff, game_over_flash_loop
+        outi SR15, tremoloOn
 game_over_flash_loop:
         stlia clearScreen
         call draw_pipe
         call draw_score_hud
         call draw_bird_rtb
         call delay_frame
+        outi SR15, tremoloOff
         stlia clearScreen
         call draw_pipe
         call draw_score_hud
         call delay_frame
         dec flashCount, flashCount % 8
         jnz game_over_flash_loop
-        ldi gameState, 2
+        outi SR15, tremoloOff
         cmp scoreH, topScoreH
         jc game_over_keep_top
         jnz game_over_set_top
@@ -275,6 +318,31 @@ wait_release_done:
         outi SR7, 0
         ret
 
+play_beep_if_enabled:
+        btjr gameFlags, soundOff, play_beep_if_enabled_skip
+        outi SR15, beep
+play_beep_if_enabled_skip:
+        ret
+
+play_score_beep_if_enabled:
+        btjr gameFlags, soundOff, play_score_beep_if_enabled_skip
+        outi SR15, beep
+        call delay_sound_gap
+        outi SR15, beep
+play_score_beep_if_enabled_skip:
+        ret
+
+delay_sound_gap:
+        ldi delayOuter, 3
+delay_sound_gap_outer:
+        ldi delayInner, 15
+delay_sound_gap_inner:
+        dec delayInner, delayInner % 8
+        jnz delay_sound_gap_inner
+        dec delayOuter, delayOuter % 8
+        jnz delay_sound_gap_outer
+        ret
+
 show_title:
         stlia clearScreen
         plai 0
@@ -287,7 +355,13 @@ show_title:
         psai strStart
         call print10RAMBytes
         plai 30
-        psai strFlap
+        btjr gameFlags, soundOff, show_title_sound_off
+        psai strSoundOn
+        call print10RAMBytes
+        stlia resetScanline
+        ret
+show_title_sound_off:
+        psai strSoundOff
         call print10RAMBytes
         stlia resetScanline
         ret
@@ -390,9 +464,6 @@ print_digit9:
         ret
 
 draw:
-        cpjr gameState, 1, draw_playing
-        ret
-draw_playing:
         stlia clearScreen
         call draw_pipe
         jmp draw_score_hud_playing
