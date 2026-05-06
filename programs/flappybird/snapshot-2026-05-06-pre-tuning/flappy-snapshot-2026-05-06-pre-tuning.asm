@@ -9,9 +9,8 @@
 ; Display model:
 ;   Text-mode 4x10 playfield using character cells.
 ;   The bird is a race-the-beam pseudo-sprite at columns 0-1.
-;   Two pipes advance through column pairs.
-;   The main pipe uses 8-9, 6-7, 4-5, 2-3, 0-1.
-;   The second pipe is offset by two steps.
+;   The pipe advances through column pairs 8-9, 6-7, 4-5, 2-3, 0-1.
+;   Collision is checked only at 0-1.
 
         ##define birdY RA0
         ##define pipeStep RA1
@@ -27,18 +26,11 @@
         ##define topScoreT RC2
         ##define topScoreH RC3
         ##define birdMotion RC4
-        ##define gapY2 RC5
-        ##define speedLevel RC6
-        ##define gapSeed RC7
 
         ##define buttonsState RB0
         ##define delayOuter RB1
         ##define delayInner RB2
         ##define delayRepeat RB3
-        ##define titlePtrL RB4
-        ##define titlePtrM RB5
-        ##define titlePtrH RB6
-        ##define titleTick RB7
 
         ##define soundOff 0
         ##define settingsInitA 1
@@ -50,8 +42,10 @@
 
         ##define clearScreen 0x7D
         ##define resetScanline 0x7F
+        ##define print5RAMBytes 0xBD0 - 5
         ##define print6RAMBytes 0xBD0 - 6
         ##define print10RAMBytes 0xBD0 - 10
+        ##define clearCurrentBank 0x8F2
 
         ##define tremoloOn 0b0100
         ##define tremoloOff 0b0010
@@ -75,29 +69,14 @@
 
 strTitle:
         db 'F','l','a','p','p','y','B','i','r','d'
-strTitleScroll:
-        db ' ',' ',' ',' ',' ',' ',' ',' ',' ',' '
-        db 'C','r','e','a','t','e','d',' ','b','y'
-        db ' ','L','i','o','n',' ','i','n',' ','2'
-        db '0','2','6',' ','(','g','i','t','h','u'
-        db 'b','.','c','o','m','/','s','z','e','p'
-        db 't','a','m','a','s',')',' ','f','o','r'
-        db ' ','t','h','e',' ','l','e','g','e','n'
-        db 'd','a','r','y',' ','S','e','i','k','o'
-        db ' ','U','C','-','2','0','0','0',' ','p'
-        db 'r','o','g','r','a','m','m','a','b','l'
-        db 'e',' ','w','r','i','s','t','w','a','t'
-        db 'c','h','.',' ','T','h','a','n','k','s'
-        db ' ','t','o',' ','a','z','y','a','5','2'
-        db '!',' ',' ',' ',' ',' ',' ',' ',' ',' '
-strTitleScrollReset:
-        db ' ',' ',' ',' ',' ',' ',' ',' ',' '
+strByLion:
+        db ' ','b','y',' ','L','i','o','n',' ',' '
 strStart:
         db 'P','l','a','y',':','S','T','A','R','T'
 strSoundOn:
-        db 'S','n','d','O','N',':','M','O','D','E'
+        db 'S','N','D','O','N',':','M','O','D','E'
 strSoundOff:
-        db 'S','n','d','O','F','F',':','M','O','D'
+        db 'S','N','D','O','F','F',':','M','O','D'
 strGameOver:
         db 'G','A','M','E',' ','O','V','E','R',' '
 strScore:
@@ -142,7 +121,6 @@ start_keep_settings:
         ldi topScore, 0
         ldi topScoreT, 0
         ldi topScoreH, 0
-        call reset_title_scroll
         call show_title
         jmp wait_start
 
@@ -159,29 +137,12 @@ wait_start_do_start:
         call wait_release
         jmp new_game
 wait_start_toggle_sound:
-        cpi flashCount, 0
-        jz wait_start_toggle_sound_title
-        call reset_title_scroll
-        call show_title
-        ldi flashCount, 0
-        outi SR7, 0
-        call wait_release
-        jmp wait_start
-wait_start_toggle_sound_title:
         xori gameFlags, 1 << soundOff
         outi SR7, 0
         call show_title
         call wait_release
         jmp wait_start
 wait_start_no_key:
-        cpi flashCount, 0
-        jnz wait_start
-        call delay_title_idle
-        dec titleTick, titleTick % 8
-        jnz wait_start
-        ldi titleTick, 6
-        call advance_title_scroll
-        call show_title
         jmp wait_start
 
 game_loop:
@@ -207,36 +168,39 @@ no_flap:
         jmp game_over
 after_gravity:
         inc pipeStep, pipeStep % 8
-        cpi pipeStep, 2
-        jz score_event_second_pipe
         cpi pipeStep, 5
         jnz timer_check_collision
         ldi pipeStep, 0
-        call add_score_event
-        call next_gap_primary
-        jmp timer_check_collision
-score_event_second_pipe:
-        cpjr gapY2, 0, score_event_second_pipe_no_score
-        call add_score_event
-score_event_second_pipe_no_score:
-        call next_gap_secondary
+        inc scoreL, scoreL % 8
+        cpi scoreL, 10
+        jnz score_inc_beep
+        ldi scoreL, 0
+        inc scoreT, scoreT % 8
+        cpi scoreT, 10
+        jnz score_inc_beep
+        ldi scoreT, 0
+        inc scoreH, scoreH % 8
+        cpi scoreH, 10
+        jnz score_inc_beep
+        ldi scoreH, 0
+score_inc_beep:
+        call play_score_beep_if_enabled
+score_inc_done:
+        inc gapY, gapY % 8
+        cpi gapY, 3
+        jnz timer_check_collision
+        ldi gapY, 1
 
 timer_check_collision:
-        cpi pipeStep, 1
-        jz timer_check_collision_second
         cpi pipeStep, 4         ; columns 0-1, same as bird columns.
         jnz timer_draw
         call check_gap
-        jmp timer_draw
-timer_check_collision_second:
-        call check_gap_secondary
 timer_draw:
         call draw
         jmp game_loop
 
 check_gap:
         cpjr gapY, 1, check_gap1
-        cpjr gapY, 3, check_gap3
 check_gap2:
         cpjr birdY, 1, check_gap_ok
         cpjr birdY, 2, check_gap_ok
@@ -245,30 +209,7 @@ check_gap1:
         cpjr birdY, 0, check_gap_ok
         cpjr birdY, 1, check_gap_ok
         jmp game_over
-check_gap3:
-        cpjr birdY, 2, check_gap_ok
-        cpjr birdY, 3, check_gap_ok
-        jmp game_over
 check_gap_ok:
-        ret
-
-check_gap_secondary:
-        cpjr gapY2, 0, check_gap_secondary_ok
-        cpjr gapY2, 1, check_gap_secondary1
-        cpjr gapY2, 3, check_gap_secondary3
-check_gap_secondary2:
-        cpjr birdY, 1, check_gap_secondary_ok
-        cpjr birdY, 2, check_gap_secondary_ok
-        jmp game_over
-check_gap_secondary1:
-        cpjr birdY, 0, check_gap_secondary_ok
-        cpjr birdY, 1, check_gap_secondary_ok
-        jmp game_over
-check_gap_secondary3:
-        cpjr birdY, 2, check_gap_secondary_ok
-        cpjr birdY, 3, check_gap_secondary_ok
-        jmp game_over
-check_gap_secondary_ok:
         ret
 
 update_bird_motion:
@@ -286,13 +227,10 @@ new_game:
         ldi birdY, 1
         ldi pipeStep, 0
         ldi gapY, 1
-        ldi gapY2, 0
         ldi scoreL, 0
         ldi scoreT, 0
         ldi scoreH, 0
         ldi birdMotion, 2
-        ldi speedLevel, 0
-        ldi gapSeed, 0
         ldi flashCount, 0
         ldi birdState, 0
         outi SR15, tremoloOff
@@ -300,25 +238,22 @@ new_game:
         jmp game_loop
 
 game_over:
-        cpi pipeStep, 1
-        jz game_over_shift_second_pipe
         cpi pipeStep, 4
         jnz game_over_flash_init
 game_over_shift_pipe:
         ldi pipeStep, 3
-        jmp game_over_flash_init
-game_over_shift_second_pipe:
-        ldi pipeStep, 0
 game_over_flash_init:
         ldi birdState, 3
         ldi flashCount, 4
-        call play_death_tada_if_enabled
+        btjr gameFlags, soundOff, game_over_flash_loop
+        outi SR15, tremoloOn
 game_over_flash_loop:
         stlia clearScreen
         call draw_pipe
         call draw_score_hud
         call draw_bird_rtb
         call delay_frame
+        outi SR15, tremoloOff
         stlia clearScreen
         call draw_pipe
         call draw_score_hud
@@ -357,22 +292,10 @@ game_over_keep_top:
         stlia resetScanline
         outi SR7, 0
         call wait_release
-        ldi flashCount, 1
         jmp wait_start
 
 delay_frame:
-        cpi speedLevel, 0
-        jz delay_frame_lvl0
-        cpi speedLevel, 1
-        jz delay_frame_lvl1
-        ldi delayRepeat, 3
-        jmp delay_repeat_loop
-delay_frame_lvl0:
         ldi delayRepeat, 5
-        jmp delay_repeat_loop
-delay_frame_lvl1:
-        ldi delayRepeat, 4
-        jmp delay_repeat_loop
 delay_repeat_loop:
         ldi delayOuter, 15
 delay_outer_loop:
@@ -395,39 +318,10 @@ wait_release_done:
         outi SR7, 0
         ret
 
-reset_title_scroll:
-        ldi titlePtrL, strTitleScroll & 0x0F
-        ldi titlePtrM, (strTitleScroll >> 4) & 0x0F
-        ldi titlePtrH, (strTitleScroll >> 8) & 0x0F
-        ldi titleTick, 6
-        ret
-
-advance_title_scroll:
-        ldi birdMotion, 1
-        ldi gapY2, 0
-        ldi speedLevel, 0
-        adm titlePtrL, speedLevel
-        cpi titlePtrH, (strTitleScrollReset >> 8) & 0x0F
-        jnz advance_title_scroll_done
-        cpi titlePtrM, (strTitleScrollReset >> 4) & 0x0F
-        jnz advance_title_scroll_done
-        cpi titlePtrL, strTitleScrollReset & 0x0F
-        jnz advance_title_scroll_done
-        ldi titlePtrL, strTitleScroll & 0x0F
-        ldi titlePtrM, (strTitleScroll >> 4) & 0x0F
-        ldi titlePtrH, (strTitleScroll >> 8) & 0x0F
-advance_title_scroll_done:
-        ret
-
-delay_title_idle:
-        ldi delayOuter, 3
-delay_title_idle_outer:
-        ldi delayInner, 15
-delay_title_idle_inner:
-        dec delayInner, delayInner % 8
-        jnz delay_title_idle_inner
-        dec delayOuter, delayOuter % 8
-        jnz delay_title_idle_outer
+play_beep_if_enabled:
+        btjr gameFlags, soundOff, play_beep_if_enabled_skip
+        outi SR15, beep
+play_beep_if_enabled_skip:
         ret
 
 play_score_beep_if_enabled:
@@ -436,154 +330,6 @@ play_score_beep_if_enabled:
         call delay_sound_gap
         outi SR15, beep
 play_score_beep_if_enabled_skip:
-        ret
-
-play_speedup_beep_if_enabled:
-        btjr gameFlags, soundOff, play_speedup_beep_if_enabled_skip
-        outi SR15, beep
-        call delay_sound_gap_long
-        outi SR15, beep
-        call delay_sound_gap_long
-        outi SR15, beep
-play_speedup_beep_if_enabled_skip:
-        ret
-
-play_death_tada_if_enabled:
-        btjr gameFlags, soundOff, play_death_tada_if_enabled_skip
-        outi SR15, beep
-        call delay_sound_gap_long
-        outi SR15, beep
-        call delay_sound_gap_long
-        outi SR15, beep
-        call delay_sound_gap_long
-        outi SR15, tremoloOn
-        call delay_sound_gap_long
-        call delay_sound_gap_long
-        call delay_sound_gap_long
-        outi SR15, tremoloOff
-play_death_tada_if_enabled_skip:
-        ret
-
-add_score_event:
-        inc scoreL, scoreL % 8
-        cpi scoreL, 10
-        jnz add_score_event_check_speed
-        ldi scoreL, 0
-        inc scoreT, scoreT % 8
-        cpi scoreT, 10
-        jnz add_score_event_check_speed
-        ldi scoreT, 0
-        inc scoreH, scoreH % 8
-        cpi scoreH, 10
-        jnz add_score_event_check_speed
-        ldi scoreH, 0
-add_score_event_check_speed:
-        call check_speed_level_up
-        cpjr delayOuter, 0, add_score_event_regular_beep
-        call play_speedup_beep_if_enabled
-        ret
-add_score_event_regular_beep:
-        call play_score_beep_if_enabled
-        ret
-
-check_speed_level_up:
-        ldi delayOuter, 0
-        cpi speedLevel, 0
-        jnz check_speed_level_1
-        cpi scoreH, 0
-        jnz set_speed_level_1
-        cpi scoreT, 2
-        jc check_speed_level_1
-        jnz set_speed_level_1
-        cpi scoreL, 0
-        jc check_speed_level_1
-set_speed_level_1:
-        ldi speedLevel, 1
-        ldi delayOuter, 1
-        ret
-check_speed_level_1:
-        cpi speedLevel, 1
-        jnz check_speed_level_2
-        cpi scoreH, 0
-        jnz set_speed_level_2
-        cpi scoreT, 4
-        jc check_speed_level_2
-        jnz set_speed_level_2
-        cpi scoreL, 5
-        jc check_speed_level_2
-set_speed_level_2:
-        ldi speedLevel, 2
-        ldi delayOuter, 1
-        ret
-check_speed_level_2:
-check_speed_level_done:
-        ret
-
-next_gap_primary:
-        inc gapSeed, gapSeed % 8
-        add gapSeed, birdY
-        add gapSeed, scoreL
-        xori gapSeed, 5
-        andi gapSeed, 0x7
-next_gap_primary_map:
-        cpi gapSeed, 0
-        jz next_gap_primary_1
-        cpi gapSeed, 1
-        jz next_gap_primary_2
-        cpi gapSeed, 2
-        jz next_gap_primary_3
-        cpi gapSeed, 3
-        jz next_gap_primary_1
-        cpi gapSeed, 4
-        jz next_gap_primary_3
-        cpi gapSeed, 5
-        jz next_gap_primary_2
-        cpi gapSeed, 6
-        jz next_gap_primary_1
-        jmp next_gap_primary_2
-next_gap_primary_1:
-        ldi gapY, 1
-        ret
-next_gap_primary_2:
-        ldi gapY, 2
-        ret
-next_gap_primary_3:
-        ldi gapY, 3
-        ret
-
-next_gap_secondary:
-        inc gapSeed, gapSeed % 8
-        add gapSeed, birdY
-        add gapSeed, gapY
-        xori gapSeed, 3
-        andi gapSeed, 0x7
-next_gap_secondary_map:
-        cpi gapSeed, 0
-        jz next_gap_secondary_off
-        cpi gapSeed, 1
-        jz next_gap_secondary_2
-        cpi gapSeed, 2
-        jz next_gap_secondary_off
-        cpi gapSeed, 3
-        jz next_gap_secondary_3
-        cpi gapSeed, 4
-        jz next_gap_secondary_1
-        cpi gapSeed, 5
-        jz next_gap_secondary_off
-        cpi gapSeed, 6
-        jz next_gap_secondary_2
-        jmp next_gap_secondary_1
-next_gap_secondary_off:
-        ldi gapY2, 0
-        ret
-next_gap_secondary_1:
-        ldi gapY2, 1
-        ret
-next_gap_secondary_2:
-        ldi gapY2, 2
-        ret
-next_gap_secondary_3:
-        ldi gapY2, 3
         ret
 
 delay_sound_gap:
@@ -597,24 +343,13 @@ delay_sound_gap_inner:
         jnz delay_sound_gap_outer
         ret
 
-delay_sound_gap_long:
-        ldi delayOuter, 6
-delay_sound_gap_long_outer:
-        ldi delayInner, 15
-delay_sound_gap_long_inner:
-        dec delayInner, delayInner % 8
-        jnz delay_sound_gap_long_inner
-        dec delayOuter, delayOuter % 8
-        jnz delay_sound_gap_long_outer
-        ret
-
 show_title:
         stlia clearScreen
         plai 0
         psai strTitle
         call print10RAMBytes
         plai 10
-        psam titlePtrL, titlePtrH % 8
+        psai strByLion
         call print10RAMBytes
         plai 20
         psai strStart
@@ -973,16 +708,6 @@ draw_bird_rtb3_wait2:
         ret
 
 draw_pipe:
-        call draw_pipe_primary
-        cpjr gapY2, 0, draw_pipe_done
-        mov delayOuter, gapY
-        mov gapY, gapY2
-        call draw_pipe_secondary
-        mov gapY, delayOuter
-draw_pipe_done:
-        ret
-
-draw_pipe_primary:
         cpjr pipeStep, 0, draw_pipe9_j
         cpjr pipeStep, 1, draw_pipe7_j
         cpjr pipeStep, 2, draw_pipe5_j
@@ -997,24 +722,8 @@ draw_pipe5_j:
 draw_pipe3_j:
         jmp draw_pipe3
 
-draw_pipe_secondary:
-        cpjr pipeStep, 0, draw_pipe_secondary3
-        cpjr pipeStep, 1, draw_pipe_secondary1
-        cpjr pipeStep, 2, draw_pipe_secondary9
-        cpjr pipeStep, 3, draw_pipe_secondary7
-        jmp draw_pipe5
-draw_pipe_secondary3:
-        jmp draw_pipe3
-draw_pipe_secondary1:
-        jmp draw_pipe1
-draw_pipe_secondary9:
-        jmp draw_pipe9
-draw_pipe_secondary7:
-        jmp draw_pipe7
-
 draw_pipe9:
         cpjr gapY, 1, draw_pipe9_gap1
-        cpjr gapY, 3, draw_pipe9_gap3
         plai 8
         stli 0xFF
         plai 9
@@ -1022,16 +731,6 @@ draw_pipe9:
         plai 38
         stli 0xFF
         plai 39
-        stli 0xFF
-        ret
-draw_pipe9_gap3:
-        plai 8
-        stli 0xFF
-        plai 9
-        stli 0xFF
-        plai 18
-        stli 0xFF
-        plai 19
         stli 0xFF
         ret
 draw_pipe9_gap1:
@@ -1047,7 +746,6 @@ draw_pipe9_gap1:
 
 draw_pipe7:
         cpjr gapY, 1, draw_pipe7_gap1
-        cpjr gapY, 3, draw_pipe7_gap3
         plai 6
         stli 0xFF
         plai 7
@@ -1055,16 +753,6 @@ draw_pipe7:
         plai 36
         stli 0xFF
         plai 37
-        stli 0xFF
-        ret
-draw_pipe7_gap3:
-        plai 6
-        stli 0xFF
-        plai 7
-        stli 0xFF
-        plai 16
-        stli 0xFF
-        plai 17
         stli 0xFF
         ret
 draw_pipe7_gap1:
@@ -1080,7 +768,6 @@ draw_pipe7_gap1:
 
 draw_pipe5:
         cpjr gapY, 1, draw_pipe5_gap1
-        cpjr gapY, 3, draw_pipe5_gap3
         plai 4
         stli 0xFF
         plai 5
@@ -1088,16 +775,6 @@ draw_pipe5:
         plai 34
         stli 0xFF
         plai 35
-        stli 0xFF
-        ret
-draw_pipe5_gap3:
-        plai 4
-        stli 0xFF
-        plai 5
-        stli 0xFF
-        plai 14
-        stli 0xFF
-        plai 15
         stli 0xFF
         ret
 draw_pipe5_gap1:
@@ -1113,7 +790,6 @@ draw_pipe5_gap1:
 
 draw_pipe3:
         cpjr gapY, 1, draw_pipe3_gap1
-        cpjr gapY, 3, draw_pipe3_gap3
         plai 2
         stli 0xFF
         plai 3
@@ -1121,16 +797,6 @@ draw_pipe3:
         plai 32
         stli 0xFF
         plai 33
-        stli 0xFF
-        ret
-draw_pipe3_gap3:
-        plai 2
-        stli 0xFF
-        plai 3
-        stli 0xFF
-        plai 12
-        stli 0xFF
-        plai 13
         stli 0xFF
         ret
 draw_pipe3_gap1:
@@ -1146,7 +812,6 @@ draw_pipe3_gap1:
 
 draw_pipe1:
         cpjr gapY, 1, draw_pipe1_gap1
-        cpjr gapY, 3, draw_pipe1_gap3
         plai 0
         stli 0xFF
         plai 1
@@ -1154,16 +819,6 @@ draw_pipe1:
         plai 30
         stli 0xFF
         plai 31
-        stli 0xFF
-        ret
-draw_pipe1_gap3:
-        plai 0
-        stli 0xFF
-        plai 1
-        stli 0xFF
-        plai 10
-        stli 0xFF
-        plai 11
         stli 0xFF
         ret
 draw_pipe1_gap1:
