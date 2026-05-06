@@ -6,5 +6,5 @@ Current project highlights:
 
 - Flappy Bird game for the Seiko UC-2000
 
-Great thanks to azya52 for his Seiko UC-2000 reverse-engineering repo:
-[azya52/seiko](https://github.com/azya52/seiko)
+Great thanks to azya52 for his Seiko UC-2000 reverse-engineering work:
+[azya52](https://github.com/azya52)
